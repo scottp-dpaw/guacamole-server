@@ -543,6 +543,22 @@ int guac_terminal_send_data(guac_terminal* term, const char* data, int length);
 int guac_terminal_send_string(guac_terminal* term, const char* data);
 
 /**
+ * Sends the terminal clipboard contents after sanitisation. If terminal input
+ * is currently coming from a stream due to a prior call to
+ * guac_terminal_send_stream(), any input which would normally result from
+ * invoking this function is dropped.
+ *
+ * @param term
+ *     The terminal which should receive the given data on STDIN.
+ *
+ * @return
+ *     The number of bytes written to STDIN, or a negative value if an error
+ *     occurs preventing the data from being written. This should always be
+ *     the size of the data given unless data is intentionally dropped.
+ */
+int guac_terminal_send_clipboard(guac_terminal* term);
+
+/**
  * Writes the given buffer to the given terminal's STDOUT. All requested bytes
  * will be written unless an error occurs. This function may block until space
  * is freed in the output buffer by guac_terminal_render_frame().

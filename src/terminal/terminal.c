@@ -231,6 +231,7 @@ void guac_terminal_reset(guac_terminal* term) {
     term->application_cursor_keys = false;
     term->automatic_carriage_return = false;
     term->insert_mode = false;
+    term->bracketed_paste_mode = false;
 
     /* Reset tabs */
     term->tab_interval = 8;
@@ -1574,6 +1575,87 @@ int guac_terminal_send_string(guac_terminal* term, const char* data) {
 
 }
 
+int guac_terminal_send_clipboard(guac_terminal *term) {
+    char *filtered = guac_mem_alloc(term->clipboard->length + 12);
+    uint8_t *src_ptr = (uint8_t *)term->clipboard->buffer;
+    uint8_t *src_end = (uint8_t *)(term->clipboard->buffer + term->clipboard->length);
+    uint8_t *dst_ptr = (uint8_t *)filtered;
+    int filtered_len = 0;
+
+    /* Send the paste start sequence */
+    if (term->bracketed_paste_mode) {
+        memcpy(dst_ptr, "\x1B[200~", 6);
+        dst_ptr += 6;
+        filtered_len += 6;
+    }
+
+    while (src_ptr < src_end) {
+
+        /* Exclude Unicode CO and C1 control characters except tab, line feed
+         * and carriage return. */
+        bool is_control = (((*src_ptr >= 0x00) && (*src_ptr < 0x20)) ||
+                ((*src_ptr >= 0x80) && (*src_ptr < 0xa0))) &&
+                (*src_ptr != 0x09) && (*src_ptr != 0x0a) && (*src_ptr != 0x0d);
+
+        /* Allow UTF-8 codepoints */
+        if ((*src_ptr & 0xe0) == 0xc0) {
+
+            /* UTF-8 2-byte codepoint */
+            if ((src_ptr + 1 < src_end) && ((src_ptr[1] & 0xc0) == 0x80)) {
+                dst_ptr[0] = src_ptr[0];
+                dst_ptr[1] = src_ptr[1];
+                dst_ptr += 2;
+                filtered_len += 2;
+                src_ptr++;
+            }
+        }
+        else if ((*src_ptr & 0xf0) == 0xe0) {
+
+            /* UTF-8 3-byte codepoint */
+            if ((src_ptr + 2 < src_end) && ((src_ptr[1] & 0xc0) == 0x80) &&
+                    ((src_ptr[2] & 0xc0) == 0x80)) {
+                dst_ptr[0] = src_ptr[0];
+                dst_ptr[1] = src_ptr[1];
+                dst_ptr[2] = src_ptr[2];
+                dst_ptr += 3;
+                filtered_len += 3;
+                src_ptr += 2;
+            }
+         }
+        else if ((*src_ptr & 0xf8) == 0xf0) {
+
+            /* UTF-8 4-byte codepoint */
+            if ((src_ptr + 3 < src_end) && ((src_ptr[1] & 0xc0) == 0x80) &&
+                    ((src_ptr[2] & 0xc0) == 0x80) && ((src_ptr[3] & 0xc0) == 0x80)) {
+                dst_ptr[0] = src_ptr[0];
+                dst_ptr[1] = src_ptr[1];
+                dst_ptr[2] = src_ptr[2];
+                dst_ptr[3] = src_ptr[3];
+                dst_ptr += 4;
+                filtered_len += 4;
+                src_ptr += 3;
+            }
+        }
+        else if (!is_control) {
+            *dst_ptr = *src_ptr;
+            dst_ptr++;
+            filtered_len++;
+        }
+        src_ptr++;
+    }
+
+    /* Send the paste stop sequence */
+    if (term->bracketed_paste_mode) {
+        memcpy(dst_ptr, "\x1B[201~", 6);
+        dst_ptr += 6;
+        filtered_len += 6;
+    }
+
+    int result = guac_terminal_send_data(term, filtered, filtered_len);
+    guac_mem_free(filtered);
+    return result;
+}
+
 static int __guac_terminal_send_key(guac_terminal* term, int keysym, int pressed) {
 
     /* Ignore user input if terminal is not started */
@@ -1605,7 +1687,7 @@ static int __guac_terminal_send_key(guac_terminal* term, int keysym, int pressed
 
         /* Ctrl+Shift+V or Cmd+v (mac style) shortcuts for paste */
         if ((keysym == 'V' && term->mod_ctrl) || (keysym == 'v' && term->mod_meta))
-            return guac_terminal_send_data(term, term->clipboard->buffer, term->clipboard->length);
+            return guac_terminal_send_clipboard(term);
 
         /*
          * Ctrl+Shift+C and Cmd+c shortcuts for copying are not handled, as
@@ -1937,7 +2019,7 @@ static int __guac_terminal_send_mouse(guac_terminal* term, guac_user* user,
 
     /* Paste contents of clipboard on right or middle mouse button up */
     if ((released_mask & GUAC_CLIENT_MOUSE_RIGHT) || (released_mask & GUAC_CLIENT_MOUSE_MIDDLE))
-        return guac_terminal_send_data(term, term->clipboard->buffer, term->clipboard->length);
+        return guac_terminal_send_clipboard(term);
 
     /* If left mouse button was just released, stop selection */
     if (released_mask & GUAC_CLIENT_MOUSE_LEFT)
